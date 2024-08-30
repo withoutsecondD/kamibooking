@@ -2,9 +2,9 @@ services:
   db:
     image: postgres:latest
     environment:
-      POSTGRES_USER: "test_user"
-      POSTGRES_PASSWORD: "test_pass"
-      POSTGRES_DB: "test_db"
+      POSTGRES_USER: "postgres"
+      POSTGRES_PASSWORD: "postgres"
+      POSTGRES_DB: "kami"
     ports:
       - '5432:5432'
     volumes:
@@ -21,9 +21,9 @@ services:
     ports:
       - '3000:3000'
     environment:
-      POSTGRESQL_DB_USER: "test_user"
-      POSTGRESQL_DB_PASSWORD: "test_pass"
-      POSTGRESQL_DB_NAME: "test_db"
+      POSTGRESQL_DB_USER: "postgres"
+      POSTGRESQL_DB_PASSWORD: "postgres"
+      POSTGRESQL_DB_NAME: "kami"
       POSTGRESQL_DB_HOST: "db"
       POSTGRESQL_DB_PORT: "5432"
     depends_on:

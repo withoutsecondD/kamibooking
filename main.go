@@ -11,6 +11,7 @@ import (
 	"github.com/withoutsecondd/kamibooking/service"
 	"net/http"
 	"os"
+	"time"
 )
 
 func main() {
@@ -26,9 +27,18 @@ func main() {
 		os.Getenv("POSTGRESQL_DB_NAME"),
 	)
 
-	conn, err := pgx.Connect(context.Background(), connString)
-	if err != nil {
-		fmt.Println(err)
+	var conn *pgx.Conn
+	var err error
+
+	for i := 0; i < 5; i++ {
+		conn, err = pgx.Connect(context.Background(), connString)
+		if err != nil {
+			fmt.Println(err)
+			time.Sleep(5 * time.Second)
+		} else {
+			fmt.Println("successfully connected to the database")
+			break
+		}
 	}
 
 	repo := &repository.PostgresqlRepository{Conn: conn}
