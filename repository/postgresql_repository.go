@@ -2,14 +2,15 @@ package repository
 
 import (
 	"context"
-	"github.com/jackc/pgx/v5"
+	"errors"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/withoutsecondd/kamibooking/internal"
 	"github.com/withoutsecondd/kamibooking/model"
 	"net/http"
 )
 
 type PostgresqlRepository struct {
-	Conn *pgx.Conn
+	Conn *pgxpool.Pool
 }
 
 func (repo *PostgresqlRepository) GetReservationsByRoomId(roomId int64) ([]model.Reservation, error) {
@@ -36,41 +37,65 @@ func (repo *PostgresqlRepository) GetReservationsByRoomId(roomId int64) ([]model
 }
 
 func (repo *PostgresqlRepository) CreateReservation(reservation *model.Reservation) error {
-	query := `
-		INSERT INTO reservations(room_id, start_time, end_time)
-		VALUES($1, $2, $3)
-	`
-
-	_, err := repo.Conn.Exec(context.Background(), query, reservation.RoomID, reservation.StartTime, reservation.EndTime)
+	tx, err := repo.Conn.Begin(context.Background())
 	if err != nil {
-		return internal.HttpError{Err: err, Code: http.StatusInternalServerError}
+		return err
 	}
 
-	return nil
-}
+	query := `SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;`
 
-func (repo *PostgresqlRepository) GetConflictingReservationsCount(reservation *model.Reservation) (int, error) {
-	query := `
+	_, err = tx.Exec(context.Background(), query)
+	if err != nil {
+		tx.Rollback(context.Background())
+		return err
+	}
+
+	query = `
 		SELECT * FROM reservations
-        WHERE room_id = $1 AND ((start_time >= $2 AND start_time <= $3) OR (end_time >= $2 AND end_time <= $3))
+        WHERE room_id = $1 AND ((start_time >= $2 AND start_time <= $3) OR (end_time >= $2 AND end_time <= $3));
 	`
 
-	rows, err := repo.Conn.Query(context.Background(), query, reservation.RoomID, reservation.StartTime, reservation.EndTime)
+	rows, err := tx.Query(context.Background(), query, reservation.RoomID, reservation.StartTime, reservation.EndTime)
 	if err != nil {
-		return 0, internal.HttpError{Err: err, Code: http.StatusInternalServerError}
+		tx.Rollback(context.Background())
+		return err
 	}
 
-	reservations := make([]model.Reservation, 0)
+	conflicts := make([]model.Reservation, 0)
 
 	for rows.Next() {
 		var reservation model.Reservation
 
 		if err := rows.Scan(&reservation.ID, &reservation.RoomID, &reservation.StartTime, &reservation.EndTime); err != nil {
-			return 0, internal.HttpError{Err: err, Code: http.StatusInternalServerError}
+			return err
 		}
 
-		reservations = append(reservations, reservation)
+		conflicts = append(conflicts, reservation)
 	}
 
-	return len(reservations), nil
+	if len(conflicts) > 0 {
+		return internal.HttpError{
+			Err:  errors.New("reservations conflict: some reservations have conflicting timestamps"),
+			Code: http.StatusConflict,
+		}
+	}
+
+	query = `
+		INSERT INTO reservations(room_id, start_time, end_time)
+		VALUES($1, $2, $3);
+	`
+
+	_, err = tx.Exec(context.Background(), query, reservation.RoomID, reservation.StartTime, reservation.EndTime)
+	if err != nil {
+		tx.Rollback(context.Background())
+		return err
+	}
+
+	err = tx.Commit(context.Background())
+	if err != nil {
+		tx.Rollback(context.Background())
+		return err
+	}
+
+	return nil
 }

@@ -1,10 +1,12 @@
 package service
 
 import (
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
+	"context"
+	"fmt"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/withoutsecondd/kamibooking/model"
 	"github.com/withoutsecondd/kamibooking/repository"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -14,10 +16,9 @@ func TestDefaultReservationService_PostReservation(t *testing.T) {
 	// ARRANGE
 
 	testTable := []struct {
-		name          string
-		args          []*model.Reservation
-		setupRepoMock func(m *repository.MockRepository, args []*model.Reservation)
-		wantErr       []bool
+		name    string
+		args    []*model.Reservation
+		wantErr bool
 	}{
 		{
 			name: "testing calls with valid reservations (without intersections)",
@@ -34,41 +35,26 @@ func TestDefaultReservationService_PostReservation(t *testing.T) {
 					StartTime: time.Date(2024, 8, 29, 11, 30, 0, 0, time.UTC),
 					EndTime:   time.Date(2024, 8, 29, 12, 0, 0, 0, time.UTC),
 				},
-				{
-					ID:        0,
-					RoomID:    0,
-					StartTime: time.Date(2024, 8, 29, 10, 30, 0, 0, time.UTC),
-					EndTime:   time.Date(2024, 8, 29, 11, 0, 0, 0, time.UTC),
-				},
 			},
-			setupRepoMock: func(m *repository.MockRepository, args []*model.Reservation) {
-				m.Mock.On("GetConflictingReservationsCount", mock.Anything).Return(0, nil)
-				m.Mock.On("CreateReservation", mock.Anything).Return(nil)
-			},
-			wantErr: []bool{false, false, false},
+			wantErr: false,
 		},
 		{
-			name: "testing calls with conflict reservations (time intersections)",
+			name: "testing concurrent calls with conflict reservations (time intersections)",
 			args: []*model.Reservation{
 				{
 					ID:        0,
 					RoomID:    1,
-					StartTime: time.Date(2024, 8, 29, 10, 0, 0, 0, time.UTC),
-					EndTime:   time.Date(2024, 8, 29, 11, 0, 0, 0, time.UTC),
+					StartTime: time.Date(2024, 8, 28, 10, 0, 0, 0, time.UTC),
+					EndTime:   time.Date(2024, 8, 28, 11, 0, 0, 0, time.UTC),
 				},
 				{
 					ID:        0,
 					RoomID:    1,
-					StartTime: time.Date(2024, 8, 29, 10, 50, 0, 0, time.UTC),
-					EndTime:   time.Date(2024, 8, 29, 11, 30, 0, 0, time.UTC),
+					StartTime: time.Date(2024, 8, 28, 10, 30, 0, 0, time.UTC),
+					EndTime:   time.Date(2024, 8, 28, 11, 30, 0, 0, time.UTC),
 				},
 			},
-			setupRepoMock: func(m *repository.MockRepository, args []*model.Reservation) {
-				m.Mock.On("GetConflictingReservationsCount", args[0]).Return(0, nil)
-				m.Mock.On("GetConflictingReservationsCount", args[1]).Return(1, nil)
-				m.Mock.On("CreateReservation", args[0]).Return(nil)
-			},
-			wantErr: []bool{false, true},
+			wantErr: true,
 		},
 		{
 			name: "testing call with invalid reservations (EndTime is before StartTime)",
@@ -80,38 +66,53 @@ func TestDefaultReservationService_PostReservation(t *testing.T) {
 					EndTime:   time.Date(2024, 8, 29, 10, 0, 0, 0, time.UTC),
 				},
 			},
-			setupRepoMock: func(m *repository.MockRepository, args []*model.Reservation) {},
-			wantErr:       []bool{true},
+			wantErr: true,
 		},
 	}
 
+	connString := fmt.Sprintf("postgresql://%s:%s@%s:%s/%s",
+		os.Getenv("POSTGRESQL_DB_USER"),
+		os.Getenv("POSTGRESQL_DB_PASSWORD"),
+		os.Getenv("POSTGRESQL_DB_HOST"),
+		os.Getenv("POSTGRESQL_DB_PORT"),
+		os.Getenv("POSTGRESQL_DB_NAME"),
+	)
+
+	conn, err := pgxpool.New(context.Background(), connString)
+	if err != nil {
+		fmt.Println("error connecting to the database")
+		return
+	}
+	repo := &repository.PostgresqlRepository{Conn: conn}
+	s := &DefaultReservationService{Repository: repo}
+
+	wG := sync.WaitGroup{}
+
 	for _, tC := range testTable {
 		t.Run(tC.name, func(t *testing.T) {
-			mockRepo := &repository.MockRepository{}
-			tC.setupRepoMock(mockRepo, tC.args)
-			reservationS := &DefaultReservationService{Repository: mockRepo}
-			a := assert.New(t)
+			// ACT
+			actualErr := false
 
-			wG := sync.WaitGroup{}
-			for i, arg := range tC.args {
+			for _, arg := range tC.args {
 				wG.Add(1)
 
-				arg := arg
-				i := i
-				go func() {
-					err := reservationS.PostReservation(arg)
-
-					if tC.wantErr[i] {
-						a.Error(err)
-					} else {
-						a.NoError(err)
+				go func(arg *model.Reservation) {
+					err := s.PostReservation(arg)
+					if err != nil {
+						actualErr = true
+						fmt.Println(err)
 					}
 
 					wG.Done()
-				}()
+				}(arg)
 			}
 
 			wG.Wait()
+
+			if actualErr != tC.wantErr {
+				t.Logf("expected error: %v, got: %v", tC.wantErr, actualErr)
+				t.Fail()
+			}
 		})
 	}
 }

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 	"github.com/withoutsecondd/kamibooking/handler"
 	"github.com/withoutsecondd/kamibooking/repository"
@@ -27,11 +27,11 @@ func main() {
 		os.Getenv("POSTGRESQL_DB_NAME"),
 	)
 
-	var conn *pgx.Conn
+	var conn *pgxpool.Pool
 	var err error
 
 	for i := 0; i < 5; i++ {
-		conn, err = pgx.Connect(context.Background(), connString)
+		conn, err = pgxpool.New(context.Background(), connString)
 		if err != nil {
 			fmt.Println(err)
 			time.Sleep(5 * time.Second)

@@ -2,10 +2,12 @@ package service
 
 import (
 	"errors"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/withoutsecondd/kamibooking/internal"
 	"github.com/withoutsecondd/kamibooking/model"
 	"github.com/withoutsecondd/kamibooking/repository"
 	"net/http"
+	"time"
 )
 
 type DefaultReservationService struct {
@@ -29,17 +31,27 @@ func (s *DefaultReservationService) PostReservation(res *model.Reservation) erro
 		}
 	}
 
-	conflicts, err := s.Repository.GetConflictingReservationsCount(res)
-	if err != nil {
-		return err
-	}
+	var err error
+	for i := 0; i < 3; i++ {
+		err = s.Repository.CreateReservation(res)
+		if err == nil {
+			return nil
+		}
 
-	if conflicts > 0 {
+		var sqlErr *pgconn.PgError
+		if errors.As(err, &sqlErr) && sqlErr.Code == "40001" {
+			time.Sleep(time.Millisecond * 200)
+			continue
+		}
+
 		return internal.HttpError{
-			Err:  errors.New("reservations conflict: some reservations have conflicting timestamps"),
-			Code: http.StatusConflict,
+			Err:  err,
+			Code: http.StatusInternalServerError,
 		}
 	}
 
-	return s.Repository.CreateReservation(res)
+	return internal.HttpError{
+		Err:  errors.New("transaction failed after maximum retries"),
+		Code: http.StatusInternalServerError,
+	}
 }
